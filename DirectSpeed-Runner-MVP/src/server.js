@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import { WebSocketServer } from 'ws';
 import { createClient } from '@base44/sdk';
 import { ensureUser, getState, patchState, getCampaign, saveCampaign, addLeads, listLeads, clearPending, resetQueue } from './store.js';
-import { getInstagram, startRunner, pauseRunner, resumeRunner, stopRunner, resetCycle } from './runner.js';
+import { getInstagram, startRunner, pauseRunner, resumeRunner, stopRunner, resetCycle, resumeAll } from './runner.js';
 
 const app=express(); const server=http.createServer(app); const wss=new WebSocketServer({server,path:'/ws'});
 const PORT=Number(process.env.PORT||8787), APP_ID=process.env.BASE44_APP_ID, SECRET=process.env.JWT_SECRET;
@@ -26,12 +26,14 @@ app.post('/api/leads',auth,(q,r)=>{const raw=Array.isArray(q.body?.usernames)?q.
 app.delete('/api/leads/pending',auth,(q,r)=>{const removed=clearPending(q.user.id);broadcast(q.user.id);r.json({removed});});
 app.post('/api/leads/reset',auth,(q,r)=>{resetQueue(q.user.id);broadcast(q.user.id);r.json({ok:true});});
 app.post('/api/instagram/login',auth,async(q,r)=>{try{patchState(q.user.id,{status:'starting',session_state:'login_required'});const result=await getInstagram(q.user.id).login(String(q.body?.username||''),String(q.body?.password||''));patchState(q.user.id,{status:'online',session_state:result.state,instagram_username:result.state==='connected'?String(q.body.username):null,last_error:null});broadcast(q.user.id);r.json(result);}catch(e){patchState(q.user.id,{status:'error',last_error:e.message});broadcast(q.user.id);r.status(400).json({error:e.message});}});
-app.post('/api/instagram/2fa',auth,async(q,r)=>{try{const result=await getInstagram(q.user.id).submitTwoFactor(String(q.body?.code||''));patchState(q.user.id,{status:'online',session_state:result.state,last_error:null});broadcast(q.user.id);r.json(result);}catch(e){r.status(400).json({error:e.message});}});
+app.post('/api/instagram/2fa',auth,async(q,r)=>{try{const ig=getInstagram(q.user.id);const result=await ig.submitTwoFactor(String(q.body?.code||''));const patch={status:'online',session_state:result.state,last_error:null};if(result.state==='connected'&&ig.lastUsername)patch.instagram_username=ig.lastUsername;patchState(q.user.id,patch);broadcast(q.user.id);r.json(result);}catch(e){r.status(400).json({error:e.message});}});
 app.get('/api/instagram/status',auth,async(q,r)=>{const result=await getInstagram(q.user.id).inspectLogin();patchState(q.user.id,{status:'online',session_state:result.state});broadcast(q.user.id);r.json(result);});
+// Diagnóstico: mostra a tela real do Chromium na nuvem (login, código, checkpoint).
+app.get('/api/instagram/screenshot',auth,async(q,r)=>{try{const shot=await getInstagram(q.user.id).screenshot();const state=await getInstagram(q.user.id).inspectLogin();r.json({...shot,state:state.state});}catch(e){r.status(500).json({error:e.message});}});
 app.post('/api/control/start',auth,(q,r)=>{startRunner(q.user.id,broadcast).catch(e=>patchState(q.user.id,{current_state:'erro',last_error:e.message}));r.json({ok:true});});
 app.post('/api/control/pause',auth,(q,r)=>{pauseRunner(q.user.id);broadcast(q.user.id);r.json({ok:true});});
 app.post('/api/control/resume',auth,(q,r)=>{resumeRunner(q.user.id,broadcast);broadcast(q.user.id);r.json({ok:true});});
 app.post('/api/control/stop',auth,(q,r)=>{stopRunner(q.user.id);broadcast(q.user.id);r.json({ok:true});});
 app.post('/api/control/reset-cycle',auth,(q,r)=>{resetCycle(q.user.id);broadcast(q.user.id);r.json({ok:true});});
 wss.on('connection',(ws,req)=>{try{const u=new URL(req.url,'http://localhost');const p=verify(u.searchParams.get('token'));const id=p.sub;if(!sockets.has(id))sockets.set(id,new Set());sockets.get(id).add(ws);ensureUser({id,email:p.email});ws.send(JSON.stringify({type:'state',data:getState(id)}));ws.on('close',()=>sockets.get(id)?.delete(ws));}catch{ws.close(1008,'unauthorized');}});
-server.listen(PORT,()=>console.log(`DirectSpeed Runner ouvindo em :${PORT}`));
+server.listen(PORT,()=>{console.log(`DirectSpeed Runner ouvindo em :${PORT}`);const retomadas=resumeAll(broadcast);if(retomadas)console.log(`Retomando ${retomadas} fila(s) interrompida(s) pelo reinício.`);});
