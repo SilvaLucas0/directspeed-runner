@@ -154,3 +154,10 @@ export function wasSent(userId,username){ return !!db.prepare('SELECT 1 FROM sen
 export function recordSent(userId,username){ const now=new Date().toISOString(); db.prepare('INSERT OR REPLACE INTO sent_history(user_id,username,sent_at) VALUES(?,?,?)').run(userId,username,now); const ms=Date.now(); db.prepare('INSERT INTO hour_sends(user_id,sent_at_ms) VALUES(?,?)').run(userId,ms); const key=new Date().toISOString().slice(0,10); db.prepare('INSERT INTO daily_count(user_id,date_key,count) VALUES(?,?,1) ON CONFLICT(user_id,date_key) DO UPDATE SET count=count+1').run(userId,key); }
 export function dailyCount(userId){ const key=new Date().toISOString().slice(0,10); return Number(db.prepare('SELECT count FROM daily_count WHERE user_id=? AND date_key=?').get(userId,key)?.count||0); }
 export function hourCount(userId){ const cutoff=Date.now()-3600000; db.prepare('DELETE FROM hour_sends WHERE user_id=? AND sent_at_ms<?').run(userId,cutoff); return Number(db.prepare('SELECT COUNT(*) c FROM hour_sends WHERE user_id=?').get(userId)?.c||0); }
+
+// Estados em que o loop estava vivo antes do processo morrer — usados para retomar no boot.
+const RESUMABLE = ['rodando','aguardando','pausado','pausa_ciclo','limite_hora'];
+export function listResumableUsers(){
+  const marks = RESUMABLE.map(()=>'?').join(',');
+  return db.prepare(`SELECT user_id, current_state FROM state WHERE current_state IN (${marks})`).all(...RESUMABLE);
+}
